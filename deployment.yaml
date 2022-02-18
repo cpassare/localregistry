@@ -2,7 +2,7 @@
 
 ## Prepare the needed secrets
 
-```sh
+```
 # Set hostname needed, for example:
 $ export hostname=registry.apps.<clustername>.<domain>
 
@@ -24,7 +24,7 @@ $ oc create secret generic registry-auth --from-file=htpasswd=htpasswd
 ```
 ## Create all the stuff needed
 
-```yaml
+```
 $ cat << EOF >> deployment.yaml
 apiVersion: v1
 items:
@@ -175,14 +175,14 @@ $ oc create route passthrough --service olm-registry --hostname ${hostname}
 ```
 ## Test it
 
-```sh
+```
 $ curl --user openshift:redhat -ks https://${hostname}/v2/_catalog
 {"repositories":[]}
 ```
 
 ## Plus
 
-```sh
+```
 # Update the pull secret on the cluster to have the local registry auth
 ## Add this entry to your pull-secret 
 ##     {"${hostname}":{"email":"pippo@pluto.it","auth":"b3BlbnNoaWZ0OnJlZGhhdA=="}
