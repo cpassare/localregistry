@@ -1,0 +1,197 @@
+# Registry with htpasswd authentication and certificates on OCP cluster (aws example)
+
+## Prepare the needed secrets
+
+```sh
+# Set hostname needed, for example:
+$ export hostname=registry.apps.<clustername>.<domain>
+
+# Create certificate
+$ openssl req -newkey rsa:4096 -nodes -sha256 -keyout domain.key -x509 -days 365 -out domain.crt \
+  -subj "/CN=local registry" -addext "subjectAltName=DNS:${hostname}"
+
+# Create authentication file
+$ htpasswd -bBc htpasswd openshift redhat
+
+# Create the project
+$ oc new-project local-registry
+
+# Create the secret with the certificate
+$ oc create secret tls registry-cert --cert domain.crt --key domain.key
+
+# create the secrets with authfile
+$ oc create secret generic registry-auth --from-file=htpasswd=htpasswd
+```
+## Create all the stuff needed
+
+```yaml
+$ cat << EOF >> deployment.yaml
+apiVersion: v1
+items:
+- kind: PersistentVolumeClaim
+  apiVersion: v1
+  metadata:
+    name: regpvc
+  spec:
+    accessModes:
+      - ReadWriteOnce
+    resources:
+      requests:
+        storage: 200Gi
+    storageClassName: gp2
+- apiVersion: image.openshift.io/v1
+  kind: ImageStream
+  metadata:
+    annotations:
+      openshift.io/generated-by: OpenShiftNewApp
+    creationTimestamp: null
+    labels:
+      app: olm-registry
+      app.kubernetes.io/component: olm-registry
+      app.kubernetes.io/instance: olm-registry
+    name: olm-registry
+  spec:
+    lookupPolicy:
+      local: false
+    tags:
+    - annotations:
+        openshift.io/imported-from: docker.io/library/registry:2
+      from:
+        kind: DockerImage
+        name: docker.io/library/registry:2
+      generation: null
+      importPolicy: {}
+      name: "2"
+      referencePolicy:
+        type: ""
+  status:
+    dockerImageRepository: ""
+- apiVersion: apps.openshift.io/v1
+  kind: DeploymentConfig
+  metadata:
+    annotations:
+      openshift.io/generated-by: OpenShiftNewApp
+    creationTimestamp: null
+    labels:
+      app: olm-registry
+      app.kubernetes.io/component: olm-registry
+      app.kubernetes.io/instance: olm-registry
+    name: olm-registry
+  spec:
+    replicas: 1
+    selector:
+      deploymentconfig: olm-registry
+    strategy:
+      resources: {}
+    template:
+      metadata:
+        annotations:
+          openshift.io/generated-by: OpenShiftNewApp
+        creationTimestamp: null
+        labels:
+          deploymentconfig: olm-registry
+      spec:
+        containers:
+        - env:
+          - name: REGISTRY_AUTH
+            value: htpasswd
+          - name: REGISTRY_AUTH_HTPASSWD_PATH
+            value: /auth/htpasswd
+          - name: REGISTRY_AUTH_HTPASSWD_REALM
+            value: Registry Realm
+          - name: REGISTRY_HTTP_TLS_CERTIFICATE
+            value: /certs/tls.crt
+          - name: REGISTRY_HTTP_TLS_KEY
+            value: /certs/tls.key
+          image: docker.io/library/registry:2
+          name: olm-registry
+          ports:
+          - containerPort: 5000
+            protocol: TCP
+          resources: {}
+          volumeMounts:
+          - mountPath: /var/lib/registry
+            name: olm-registry-volume-1
+          - mountPath: /certs
+            name: certs
+          - mountPath: /auth
+            name: auth
+        volumes:
+        - name: olm-registry-volume-1
+          persistentVolumeClaim:
+            claimName: regpvc
+        - name: certs
+          secret:
+            secretName: registry-cert
+        - name: auth  
+          secret:
+            secretName: registry-auth
+    test: false
+    triggers:
+    - type: ConfigChange
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - olm-registry
+        from:
+          kind: ImageStreamTag
+          name: olm-registry:2
+      type: ImageChange
+  status:
+    availableReplicas: 0
+    latestVersion: 0
+    observedGeneration: 0
+    replicas: 0
+    unavailableReplicas: 0
+    updatedReplicas: 0
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      openshift.io/generated-by: OpenShiftNewApp
+    creationTimestamp: null
+    labels:
+      app: olm-registry
+      app.kubernetes.io/component: olm-registry
+      app.kubernetes.io/instance: olm-registry
+    name: olm-registry
+  spec:
+    ports:
+    - name: 5000-tcp
+      port: 5000
+      protocol: TCP
+      targetPort: 5000
+    selector:
+      deploymentconfig: olm-registry
+  status:
+    loadBalancer: {}
+kind: List
+metadata: {}
+EOF
+
+$ oc create -f deployment.yaml
+
+$ oc create route passthrough --service olm-registry --hostname ${hostname}
+```
+## Test it
+
+```sh
+$ curl --user openshift:redhat -ks https://${hostname}/v2/_catalog
+{"repositories":[]}
+```
+
+## Plus
+
+```sh
+# Update the pull secret on the cluster to have the local registry auth
+## Add this entry to your pull-secret 
+##     {"${hostname}":{"email":"pippo@pluto.it","auth":"b3BlbnNoaWZ0OnJlZGhhdA=="}
+$ oc set data secret/pull-secret -n openshift-config --from-file=.dockerconfigjson=<new pull secret file>
+
+# Add trustedCA to have the CA needed for the local registry
+## Create new config-map with the CA
+$ oc create cm registry-cert --from-file=ca-bundle.crt=domain.crt -n openshift-config
+
+## Modify global-wide proxy
+$ oc patch proxy/cluster --type merge -p "{\"spec\":{\"trustedCA\":{\"name\":\"registry-cert\"}}}"
+```
